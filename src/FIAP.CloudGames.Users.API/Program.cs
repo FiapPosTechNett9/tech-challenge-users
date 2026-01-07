@@ -84,13 +84,13 @@ app.UseRouting();
 app.UseMiddleware<ErrorHandlingMiddleware>();
 app.UseMiddleware<CorrelationIdMiddleware>();
 
-//// Seed inicial
-//using (var scope = app.Services.CreateScope())
-//{
-//    var db = scope.ServiceProvider.GetRequiredService<UsersDbContext>();
-//    db.Database.Migrate();
-//    await UserSeeder.SeedAdminAsync(db);
-//}
+// Seed inicial
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<UsersDbContext>();
+    db.Database.Migrate();
+    await UserSeeder.SeedAdminAsync(db);
+}
 
 app.MapGet("/health", () => Results.Ok("OK")).AllowAnonymous();
 
