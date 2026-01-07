@@ -11,6 +11,7 @@ using FIAP.CloudGames.Users.Infrastructure.Repositories;
 using FIAP.CloudGames.Users.Infrastructure.Seeders;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Prometheus;
 using Serilog;
 using System.Security.Claims;
 using System.Text;
@@ -103,6 +104,18 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseHttpMetrics();
+app.MapMetrics("/metrics").AllowAnonymous();
+
+app.UseWhen(ctx => !ctx.Request.Path.StartsWithSegments("/metrics"),
+    b =>
+    {
+        b.UseHttpsRedirection();
+        b.UseAuthentication();
+        b.UseAuthorization();
+    });
+
 app.UseSerilogRequestLogging();
 app.UseAuthentication();
 app.UseAuthorization();
