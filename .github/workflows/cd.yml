@@ -33,11 +33,35 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      - name: Build and push Docker images
+      - name: Build and push Users API
         uses: docker/build-push-action@v6.18.0
         with:
           tags: '${{ secrets.DOCKER_USERNAME }}/tech-challenge-users:latest'
           context: .
+          push: true
+
+      - name: Build and push Prometheus
+        uses: docker/build-push-action@v6.18.0
+        with:
+          tags: '${{ secrets.DOCKER_USERNAME }}/tech-challenge-prometheus:latest'
+          context: .
+          file: monitoring/Dockerfile.prometheus
+          push: true
+
+      - name: Build and push Grafana
+        uses: docker/build-push-action@v6.18.0
+        with:
+          tags: '${{ secrets.DOCKER_USERNAME }}/tech-challenge-grafana:latest'
+          context: .
+          file: Dockerfile.grafana
+          push: true
+
+      - name: Build and push ADOT Collector
+        uses: docker/build-push-action@v6.18.0
+        with:
+          tags: '${{ secrets.DOCKER_USERNAME }}/tech-challenge-adot-collector:latest'
+          context: .
+          file: observability/Dockerfile.adot-collector
           push: true
 
       - name: Configure AWS credentials
@@ -48,10 +72,18 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: us-east-1
 
-      - name: Update ECS service with new image
+      - name: Update ECS Users service
         run: |
           aws ecs update-service \
             --cluster fcg-cluster \
             --service fcg-users-task-service-57hptthy \
+            --force-new-deployment \
+            --region us-east-1
+
+      - name: Update ECS Observability service
+        run: |
+          aws ecs update-service \
+            --cluster fcg-cluster \
+            --service fcg-observability-service-y1cnk5b3 \
             --force-new-deployment \
             --region us-east-1

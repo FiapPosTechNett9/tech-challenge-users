@@ -1,4 +1,4 @@
-using FIAP.CloudGames.Users.API.Extensions;
+﻿using FIAP.CloudGames.Users.API.Extensions;
 using FIAP.CloudGames.Users.API.Middlewares;
 using FIAP.CloudGames.Users.Application.Interfaces;
 using FIAP.CloudGames.Users.Application.Services;
@@ -11,40 +11,68 @@ using FIAP.CloudGames.Users.Infrastructure.Repositories;
 using FIAP.CloudGames.Users.Infrastructure.Seeders;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Microsoft.OpenApi.Models;
 using Prometheus;
 using Serilog;
+using Serilog.Events;
 using System.Security.Claims;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Swagger
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddCustomSwagger();
 
-// DbContext
 builder.Services.AddDbContext<UsersDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// Logging
-builder.Host.UseSerilog((context, services, configuration) =>
-{
-    configuration
-        .ReadFrom.Configuration(context.Configuration)
-        .ReadFrom.Services(services)
-        .Enrich.FromLogContext()
-        .WriteTo.Console();
-});
+
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(builder.Configuration)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("ServiceName", "UsersService")
+    .Enrich.WithMachineName()
+    .Enrich.WithThreadId()
+    .WriteTo.Console()
+    .WriteTo.Seq("http://localhost:5341")
+    .CreateLogger();
+
+builder.Host.UseSerilog();
+
+#region Telemetria
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracerProviderBuilder =>
+    {
+        tracerProviderBuilder
+            .AddAspNetCoreInstrumentation(options =>
+            {
+                options.RecordException = true;
+            })
+            .AddHttpClientInstrumentation()
+            .SetResourceBuilder(
+                ResourceBuilder.CreateDefault()
+                    .AddService(
+                        serviceName: "users-service",
+                        serviceVersion: "1.0.0"))
+                    .AddOtlpExporter(options =>
+                    {
+                        options.Endpoint = new Uri("http://localhost:4317");
+                        options.Protocol = OpenTelemetry.Exporter.OtlpExportProtocol.Grpc;
+                    });
+    });
+#endregion
+
 
 #region Application Services Configuration
 
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
-
 builder.Services.AddControllers();
-
 #endregion
 
 #region JWT Authentication Configuration
@@ -78,22 +106,41 @@ builder.Services.AddAuthentication("Bearer")
 
 var app = builder.Build();
 
+app.UseSerilogRequestLogging(options =>
+{
+    options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
+    options.GetLevel = (httpContext, elapsed, ex) => ex != null
+        ? LogEventLevel.Error
+        : httpContext.Response.StatusCode > 499
+            ? LogEventLevel.Error
+            : LogEventLevel.Information;
+
+    options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
+    {
+        diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value);
+        diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme);
+        diagnosticContext.Set("UserAgent", httpContext.Request.Headers["User-Agent"].ToString());
+    };
+});
+
+
 app.UsePathBase("/users");
 app.UseRouting();
 
-// Middlewares
-app.UseMiddleware<ErrorHandlingMiddleware>();
 app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseMiddleware<ErrorHandlingMiddleware>();
 
-// Seed inicial
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<UsersDbContext>();
-    db.Database.Migrate();
-    await UserSeeder.SeedAdminAsync(db);
-}
 
-app.MapGet("/health", () => Results.Ok("OK")).AllowAnonymous();
+//using (var scope = app.Services.CreateScope())
+//{
+//    var db = scope.ServiceProvider.GetRequiredService<UsersDbContext>();
+//    db.Database.Migrate();
+//    await UserSeeder.SeedAdminAsync(db);
+//}
+
+
+app.MapGet("/health", () => Results.Ok("OK"))
+   .AllowAnonymous();
 
 if (app.Environment.IsDevelopment())
 {
@@ -119,19 +166,23 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.UseHttpMetrics();
-app.MapMetrics("/metrics").AllowAnonymous();
-
-app.UseWhen(ctx => !ctx.Request.Path.StartsWithSegments("/metrics"),
-    b =>
-    {
-        b.UseHttpsRedirection();
-        b.UseAuthentication();
-        b.UseAuthorization();
-    });
-
 app.UseSerilogRequestLogging();
+
 app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
-app.Run();
+
+try
+{
+    Log.Information("Starting UsersService application");
+    app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Application terminated unexpectedly");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
